@@ -348,9 +348,8 @@ class TwilioBridge:
                     frame = self._pcm_buffer[:OPUS_FRAME_SAMPLES]
                     self._pcm_buffer = self._pcm_buffer[OPUS_FRAME_SAMPLES:]
 
-                    # Feed PCM to writer, then read encoded Opus bytes
-                    self._opus_writer.append_pcm(frame)
-                    opus_bytes = self._opus_writer.read_bytes()
+                    # Feed PCM to writer — append_pcm returns encoded Opus bytes directly
+                    opus_bytes = self._opus_writer.append_pcm(frame)
                     if opus_bytes:
                         # Prepend kind byte 0x01 for audio
                         await persona_ws.send(bytes([KIND_AUDIO]) + opus_bytes)
@@ -400,9 +399,8 @@ class TwilioBridge:
                 if not payload:
                     continue
 
-                # Decode Opus -> float32 PCM 24 kHz
-                self._opus_reader.append_bytes(payload)
-                pcm_24k = self._opus_reader.read_pcm()
+                # Decode Opus -> float32 PCM 24 kHz (append_bytes returns ndarray directly)
+                pcm_24k = self._opus_reader.append_bytes(payload)
                 if pcm_24k.shape[0] == 0:
                     continue
 

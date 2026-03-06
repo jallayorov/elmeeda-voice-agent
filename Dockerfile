@@ -31,6 +31,12 @@ RUN pip install --no-cache-dir \
 RUN git clone https://github.com/NVIDIA/PersonaPlex.git /opt/personaplex && \
     pip install --no-cache-dir /opt/personaplex/moshi
 
+# Pre-download model weights at build time (faster cold starts)
+ARG HF_TOKEN
+ENV HF_TOKEN=${HF_TOKEN}
+RUN pip install --no-cache-dir huggingface_hub && \
+    python -c "from huggingface_hub import snapshot_download; snapshot_download('nvidia/personaplex-7b-v1', token='${HF_TOKEN}')" || true
+
 # Copy application code
 COPY app.py twilio_bridge.py elmeeda_client.py persona_config.py ./
 
