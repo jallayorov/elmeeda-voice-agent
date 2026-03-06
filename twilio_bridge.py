@@ -9,12 +9,12 @@ Audio pipeline (inbound — caller voice to AI):
     Twilio mulaw 8 kHz base64
     -> decode base64 -> audioop ulaw2lin -> int16 PCM 8 kHz
     -> audioop.ratecv 8 kHz -> 24 kHz (stateful)
-    -> float32 -> sphn.OpusStreamWriter.append_pcm + read_bytes
+    -> float32 -> sphn.OpusStreamWriter.append_pcm -> Opus bytes
     -> prepend kind byte 0x01 -> PersonaPlex WS
 
 Audio pipeline (outbound — AI voice to caller):
     PersonaPlex binary (kind byte 0x01 + Opus payload)
-    -> sphn.OpusStreamReader.append_bytes + read_pcm -> float32 24 kHz
+    -> sphn.OpusStreamReader.append_bytes -> float32 ndarray 24 kHz
     -> int16 PCM -> audioop.ratecv 24 kHz -> 8 kHz (stateful)
     -> audioop lin2ulaw -> mulaw -> base64 -> Twilio media event (160 byte frames)
 """
