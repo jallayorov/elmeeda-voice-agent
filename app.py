@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 
 from elmeeda_client import ElmeedaClient
 from persona_config import DEFAULT_VOICE_PROMPT
@@ -128,6 +128,120 @@ async def lifespan(app: FastAPI):
 # App
 # ---------------------------------------------------------------------------
 
+TEST_HTML = """<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Elmeeda Voice Test</title>
+<style>
+body{font-family:system-ui;max-width:700px;margin:40px auto;padding:0 20px;background:#1a1a2e;color:#e0e0e0}
+h1{color:#00d4ff}button{padding:10px 24px;font-size:16px;border:none;border-radius:6px;cursor:pointer;margin:4px}
+#start{background:#00d4ff;color:#000}#stop{background:#ff4757;color:#fff}
+#status{padding:8px 12px;border-radius:4px;margin:12px 0;font-weight:bold}
+.connected{background:#2ed573;color:#000}.disconnected{background:#ff4757}
+.connecting{background:#ffa502;color:#000}
+#transcript{background:#16213e;border:1px solid #333;border-radius:6px;padding:16px;min-height:200px;
+  max-height:400px;overflow-y:auto;white-space:pre-wrap;font-size:14px;line-height:1.5}
+</style></head><body>
+<h1>&#x1f399; Elmeeda Voice Agent Test</h1>
+<div><button id="start" onclick="startCall()">Start Call</button>
+<button id="stop" onclick="stopCall()" disabled>Stop Call</button></div>
+<div id="status" class="disconnected">Disconnected</div>
+<h3>PersonaPlex Transcript</h3><div id="transcript"></div>
+<script>
+let ws,audioCtx,micStream,scriptNode,streamSid='test-'+Date.now();
+const MULAW_ENCODE=new Int8Array(65536);
+(function(){for(let i=0;i<65536;i++){let s=i>32767?i-65536:i;let sign=0;
+if(s<0){sign=0x80;s=-s}if(s>32635)s=32635;s+=0x84;
+let exp=0,m=s;while(m>0x3F){m>>=1;exp++}
+let mantissa=(s>>(exp+3))&0x0F;MULAW_ENCODE[i&0xFFFF]=~(sign|((exp&7)<<4)|mantissa)&0xFF}})();
+
+const MULAW_DECODE=new Float32Array(256);
+(function(){for(let i=0;i<256;i++){let u=~i&0xFF;let sign=(u&0x80)?-1:1;
+let exp=(u>>4)&7;let man=u&0x0F;
+let sample=sign*((man*2+33)*(1<<(exp+2))-33);MULAW_DECODE[i]=sample/32768.0}})();
+
+function setStatus(text,cls){const el=document.getElementById('status');el.textContent=text;el.className=cls}
+function log(t){const el=document.getElementById('transcript');el.textContent+=t;el.scrollTop=el.scrollHeight}
+
+async function startCall(){
+  const proto=location.protocol==='https:'?'wss:':'ws:';
+  ws=new WebSocket(proto+'//'+location.host+'/ws/twilio');
+  ws.onopen=()=>{
+    setStatus('Connected','connected');
+    ws.send(JSON.stringify({event:'connected',protocol:'Call',version:'1.0'}));
+    ws.send(JSON.stringify({event:'start',start:{streamSid:streamSid,
+      accountSid:'TEST',callSid:'TEST',customParameters:{}}}));
+    startMic();
+  };
+  ws.onmessage=(e)=>{
+    try{const m=JSON.parse(e.data);
+      if(m.event==='media'&&m.media&&m.media.payload){playMulaw(m.media.payload)}
+    }catch(err){
+      // might be text token or other
+      log(e.data);
+    }
+  };
+  ws.onclose=()=>{setStatus('Disconnected','disconnected');stopMic()};
+  ws.onerror=()=>setStatus('Error','disconnected');
+  setStatus('Connecting...','connecting');
+  document.getElementById('start').disabled=true;
+  document.getElementById('stop').disabled=false;
+}
+
+function stopCall(){
+  if(ws){ws.send(JSON.stringify({event:'stop',stop:{}}));ws.close()}
+  stopMic();
+  document.getElementById('start').disabled=false;
+  document.getElementById('stop').disabled=true;
+}
+
+async function startMic(){
+  audioCtx=new AudioContext({sampleRate:8000});
+  micStream=await navigator.mediaDevices.getUserMedia({audio:{sampleRate:{ideal:8000},
+    channelCount:1,echoCancellation:true,noiseSuppression:true}});
+  const src=audioCtx.createMediaStreamSource(micStream);
+  scriptNode=audioCtx.createScriptProcessor(512,1,1);
+  scriptNode.onaudioprocess=(e)=>{
+    if(!ws||ws.readyState!==1)return;
+    const inp=e.inputBuffer.getChannelData(0);
+    const mulaw=new Uint8Array(inp.length);
+    for(let i=0;i<inp.length;i++){
+      const s=Math.max(-1,Math.min(1,inp[i]));
+      const s16=Math.floor(s*32767)&0xFFFF;
+      mulaw[i]=MULAW_ENCODE[s16]&0xFF;
+    }
+    // Send in 160-byte chunks (20ms at 8kHz)
+    for(let off=0;off<mulaw.length;off+=160){
+      const chunk=mulaw.slice(off,Math.min(off+160,mulaw.length));
+      const b64=btoa(String.fromCharCode(...chunk));
+      ws.send(JSON.stringify({event:'media',streamSid:streamSid,
+        media:{payload:b64,track:'inbound',timestamp:Date.now().toString()}}));
+    }
+  };
+  src.connect(scriptNode);scriptNode.connect(audioCtx.destination);
+}
+
+function stopMic(){
+  if(scriptNode){scriptNode.disconnect();scriptNode=null}
+  if(micStream){micStream.getTracks().forEach(t=>t.stop());micStream=null}
+  if(audioCtx){audioCtx.close();audioCtx=null}
+}
+
+let playCtx,playNextTime=0;
+function playMulaw(b64){
+  if(!playCtx)playCtx=new AudioContext({sampleRate:8000});
+  const raw=atob(b64);const mulaw=new Uint8Array(raw.length);
+  for(let i=0;i<raw.length;i++)mulaw[i]=raw.charCodeAt(i);
+  const pcm=new Float32Array(mulaw.length);
+  for(let i=0;i<mulaw.length;i++)pcm[i]=MULAW_DECODE[mulaw[i]];
+  const buf=playCtx.createBuffer(1,pcm.length,8000);
+  buf.getChannelData(0).set(pcm);
+  const src=playCtx.createBufferSource();src.buffer=buf;
+  src.connect(playCtx.destination);
+  const now=playCtx.currentTime;
+  if(playNextTime<now)playNextTime=now;
+  src.start(playNextTime);playNextTime+=buf.duration;
+}
+</script></body></html>"""
+
 app = FastAPI(title="Elmeeda Voice Agent", lifespan=lifespan)
 
 
@@ -149,6 +263,12 @@ async def readyz():
     if not _ready:
         return JSONResponse({"ready": False}, status_code=503)
     return {"ready": True}
+
+
+@app.get("/test", response_class=HTMLResponse)
+async def test_ui():
+    """Browser-based voice test UI that speaks Twilio Media Streams protocol."""
+    return HTMLResponse(content=TEST_HTML)
 
 
 @app.websocket("/ws/twilio")
