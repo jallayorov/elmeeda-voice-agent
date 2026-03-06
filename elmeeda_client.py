@@ -70,50 +70,93 @@ class ElmeedaClient:
     # Generic request with auto-retry on 401
     # ------------------------------------------------------------------
 
-    async def _request(self, method: str, path: str, **kwargs) -> dict[str, Any]:
-        """Make an authenticated request, retrying once on 401."""
-        await self._ensure_token()
-        headers = {"Authorization": f"Bearer {self._access_token}"}
-        resp = await self._client.request(method, path, headers=headers, **kwargs)
+    async def _request(self, method: str, path: str, **kwargs) -> Optional[dict[str, Any]]:
+        """Make an authenticated request, retrying once on 401.
 
-        if resp.status_code == 401:
-            logger.warning("Got 401 — refreshing token and retrying")
-            self._access_token = None
+        Returns the JSON response dict, or None if the request fails.
+        All errors are caught and logged — never raises.
+        """
+        try:
             await self._ensure_token()
             headers = {"Authorization": f"Bearer {self._access_token}"}
             resp = await self._client.request(method, path, headers=headers, **kwargs)
 
-        resp.raise_for_status()
-        return resp.json()
+            if resp.status_code == 401:
+                logger.warning("Got 401 — refreshing token and retrying")
+                self._access_token = None
+                await self._ensure_token()
+                headers = {"Authorization": f"Bearer {self._access_token}"}
+                resp = await self._client.request(method, path, headers=headers, **kwargs)
+
+            resp.raise_for_status()
+            return resp.json()
+        except Exception:
+            logger.exception("API request failed: %s %s", method, path)
+            return None
 
     # ------------------------------------------------------------------
     # Public API methods
     # ------------------------------------------------------------------
 
-    async def get_warranty_status(self, unit_number: str) -> dict[str, Any]:
-        """Look up warranty coverage for a fleet unit."""
-        logger.info("Fetching warranty status for unit %s", unit_number)
-        return await self._request("GET", f"/units/{unit_number}/warranty")
+    async def get_vehicle_by_unit(self, unit_number: str) -> Optional[dict[str, Any]]:
+        """Look up a vehicle by unit number."""
+        logger.info("Fetching vehicle for unit %s", unit_number)
+        return await self._request("GET", f"/fleet/vehicles/by-unit/{unit_number}")
 
-    async def get_claim_status(self, claim_id: str) -> dict[str, Any]:
+    async def get_warranty_status(self, unit_number: str) -> Optional[dict[str, Any]]:
+        """Look up warranty coverage for a fleet unit.
+
+        Chains two calls: first gets the vehicle/VIN by unit number,
+        then looks up warranty coverage by VIN.
+        """
+        logger.info("Fetching warranty status for unit %s", unit_number)
+        vehicle = await self.get_vehicle_by_unit(unit_number)
+        if not vehicle:
+            logger.error("Cannot get warranty status — vehicle lookup failed for unit %s", unit_number)
+            return None
+        vin = vehicle.get("vin")
+        if not vin:
+            logger.error("Vehicle for unit %s has no VIN", unit_number)
+            return None
+        warranty = await self._request("GET", "/warranty/lookup", params={"vin": vin})
+        if warranty:
+            warranty["vehicle"] = vehicle
+        return warranty
+
+    async def get_claim_status(self, claim_id: str) -> Optional[dict[str, Any]]:
         """Check the status of an existing warranty claim."""
         logger.info("Fetching claim status for %s", claim_id)
-        return await self._request("GET", f"/claims/{claim_id}")
+        return await self._request("GET", f"/warranty/claims/detail/{claim_id}")
 
     async def evaluate_repair_coverage(
         self, unit_number: str, repair_code: str, symptoms: str
-    ) -> dict[str, Any]:
+    ) -> Optional[dict[str, Any]]:
         """Evaluate whether a repair is covered under warranty."""
         logger.info(
             "Evaluating coverage: unit=%s repair_code=%s", unit_number, repair_code
         )
         return await self._request(
             "POST",
-            f"/units/{unit_number}/coverage-evaluation",
-            json={"repair_code": repair_code, "symptoms": symptoms},
+            "/warranty/coverage/validate",
+            json={
+                "unit_number": unit_number,
+                "repair_code": repair_code,
+                "symptoms": symptoms,
+            },
         )
 
-    async def schedule_callback(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Schedule a callback from a warranty specialist."""
-        logger.info("Scheduling callback: %s", payload.get("phone", "unknown"))
-        return await self._request("POST", "/callbacks", json=payload)
+    async def get_warranty_alerts(self, vehicle_id: str) -> Optional[dict[str, Any]]:
+        """Get warranty alerts for a vehicle."""
+        logger.info("Fetching warranty alerts for vehicle %s", vehicle_id)
+        return await self._request("GET", "/warranty/alerts", params={"vehicle_id": vehicle_id})
+
+    async def schedule_callback(self, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """Schedule a callback from a warranty specialist.
+
+        NOTE: This endpoint doesn't exist yet — returns None with a warning.
+        """
+        logger.warning(
+            "schedule_callback called but endpoint not implemented yet. Payload: %s",
+            payload.get("phone", "unknown"),
+        )
+        return None
