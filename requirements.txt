@@ -1,0 +1,16 @@
+# Core application
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+httpx>=0.25.0
+numpy>=1.24.0
+pydantic>=2.0
+
+# Audio processing
+sphn>=0.1.4
+
+# Python 3.13+ mu-law codec compatibility
+audioop-lts>=0.2.1; python_version >= "3.13"
+
+# PersonaPlex / Moshi (installed from source in Dockerfile — not from PyPI)
+# See Dockerfile: git clone + pip install /opt/personaplex/moshi
